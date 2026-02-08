@@ -8,13 +8,14 @@
 # 可选环境变量：
 #   REPEATS=3
 #   SEED_START=42
+#   EPOCHS=50
 #   BASE_OUTPUT_DIR=experiments/minimal_multitask_suite
-#   EXPERIMENT_MATRIX="exp_a::--epochs 30|exp_b::--epochs 60"
+#   EXPERIMENT_MATRIX="exp_a::--aux-update-hgt 1|exp_b::--use-inductive-graph-train 1"
 #
 # EXPERIMENT_MATRIX 格式：
 #   name::args|name::args
 # 示例：
-#   EXPERIMENT_MATRIX="baseline::--epochs 50|long_train::--epochs 100" sbatch submit_minimal_multitask_suite_3x.sh
+#   EXPERIMENT_MATRIX="baseline::|inductive::--use-inductive-graph-train 1" sbatch submit_minimal_multitask_suite_3x.sh
 
 #SBATCH --job-name=minimal_mt_suite
 #SBATCH --partition=gpu
@@ -56,18 +57,21 @@ export CUDA_LAUNCH_BLOCKING=0
 
 REPEATS=${REPEATS:-3}
 SEED_START=${SEED_START:-42}
+EPOCHS=${EPOCHS:-50}
 BASE_OUTPUT_DIR=${BASE_OUTPUT_DIR:-experiments/minimal_multitask_suite}
 
-# 默认实验矩阵（可用 EXPERIMENT_MATRIX 覆盖）
+# 默认基础任务组合（可用 EXPERIMENT_MATRIX 覆盖）
 DEFAULT_EXPERIMENT_NAMES=(
-  "baseline_e50"
-  "long_e100"
-  "short_e20"
+  "main_only"
+  "main_domain"
+  "main_domain_mvp"
+  "full"
 )
 DEFAULT_EXPERIMENT_ARGS=(
-  "--epochs 50"
-  "--epochs 100"
-  "--epochs 20"
+  "--task-mode main_only"
+  "--task-mode main_domain"
+  "--task-mode main_domain_mvp"
+  "--task-mode full"
 )
 
 EXPERIMENT_NAMES=()
@@ -110,6 +114,7 @@ echo "Node:              ${SLURMD_NODENAME:-unknown}"
 echo "Working dir:       $(pwd)"
 echo "Repeats:           ${REPEATS}"
 echo "Seed start:        ${SEED_START}"
+echo "Epochs:            ${EPOCHS}"
 echo "Base output dir:   ${BASE_OUTPUT_DIR}"
 echo "Num experiments:   ${NUM_EXPS}"
 echo "Start time:        $(date)"
@@ -144,7 +149,7 @@ for i in $(seq 0 $((NUM_EXPS - 1))); do
 
         mkdir -p "${OUT_DIR}"
 
-        CMD=(python run.py --seed "${CURRENT_SEED}" --output-dir "${OUT_DIR}")
+        CMD=(python run.py --seed "${CURRENT_SEED}" --epochs "${EPOCHS}" --output-dir "${OUT_DIR}")
         if [[ -n "${EXP_ARGS_STR}" ]]; then
             read -r -a EXTRA_ARGS <<< "${EXP_ARGS_STR}"
             CMD+=("${EXTRA_ARGS[@]}")

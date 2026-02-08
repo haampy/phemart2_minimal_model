@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import random
@@ -32,6 +33,10 @@ FUNC_TARGET_COLS = [
 ]
 
 FUNC_MASK_COLS = [f"{c}_mask" for c in FUNC_TARGET_COLS]
+
+
+def get_func_mask_cols(target_cols: Sequence[str]) -> List[str]:
+    return [f"{c}_mask" for c in target_cols]
 
 
 def normalize_id(x: Any) -> str:
@@ -83,6 +88,7 @@ def load_main_labels(path: str) -> pd.DataFrame:
     df = _standardize_variant_gene_columns(_read_csv(path))
     disease_col = _first_existing(df, ["disease_index", "disease_id"])
     hpo_col = _first_existing(df, ["hpo_ids", "hpo_id"])
+    confidence_col = _first_existing(df, ["confidence"])
     if disease_col is None:
         raise ValueError("Cannot find disease_index column in main labels")
     if disease_col != "disease_index":
@@ -91,9 +97,18 @@ def load_main_labels(path: str) -> pd.DataFrame:
         df = df.rename(columns={hpo_col: "hpo_ids"})
     if "hpo_ids" not in df.columns:
         df["hpo_ids"] = ""
+    if confidence_col and confidence_col != "confidence":
+        df = df.rename(columns={confidence_col: "confidence"})
+    if "confidence" not in df.columns:
+        df["confidence"] = 1.0
+    df["confidence"] = (
+        pd.to_numeric(df["confidence"], errors="coerce")
+        .fillna(1.0)
+        .astype(np.float32)
+    )
     df = df.dropna(subset=["disease_index"])
     df["disease_index"] = df["disease_index"].astype(int)
-    return df[["variant_id", "gene_id", "disease_index", "hpo_ids"]]
+    return df[["variant_id", "gene_id", "disease_index", "hpo_ids", "confidence"]]
 
 
 def load_disease_table(path: str) -> pd.DataFrame:
@@ -120,19 +135,24 @@ def load_domain_labels(path: str) -> pd.DataFrame:
     return df[["variant_id", "gene_id", "domain_map"]]
 
 
-def load_func_labels(path: str) -> pd.DataFrame:
+def load_func_labels(
+    path: str,
+    target_cols: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
     df = _standardize_variant_gene_columns(_read_csv(path))
-    missing_targets = [c for c in FUNC_TARGET_COLS if c not in df.columns]
-    missing_masks = [c for c in FUNC_MASK_COLS if c not in df.columns]
+    selected_targets = list(target_cols) if target_cols is not None else list(FUNC_TARGET_COLS)
+    selected_masks = get_func_mask_cols(selected_targets)
+    missing_targets = [c for c in selected_targets if c not in df.columns]
+    missing_masks = [c for c in selected_masks if c not in df.columns]
     if missing_targets:
         raise ValueError(f"Missing FUNC target columns: {missing_targets}")
     if missing_masks:
         raise ValueError(f"Missing FUNC mask columns: {missing_masks}")
-    cols = ["variant_id", "gene_id"] + FUNC_TARGET_COLS + FUNC_MASK_COLS
+    cols = ["variant_id", "gene_id"] + selected_targets + selected_masks
     df = df[cols].dropna(subset=["variant_id", "gene_id"])
-    for c in FUNC_TARGET_COLS:
+    for c in selected_targets:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in FUNC_MASK_COLS:
+    for c in selected_masks:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(np.float32)
     return df
 
@@ -149,14 +169,22 @@ def load_embeddings(
         df = df[~df.index.duplicated(keep="first")]
         return df.astype(np.float32)
 
-    collected: List[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, chunksize=chunksize):
-        idx_col = index_col or chunk.columns[0]
-        chunk = chunk.rename(columns={idx_col: "__id__"})
-        chunk["__id__"] = chunk["__id__"].map(normalize_id)
-        sub = chunk[chunk["__id__"].isin(required_ids)]
-        if not sub.empty:
-            collected.append(sub)
+    def _collect_chunks(reader) -> List[pd.DataFrame]:
+        out: List[pd.DataFrame] = []
+        for chunk in reader:
+            idx_col = index_col or chunk.columns[0]
+            chunk = chunk.rename(columns={idx_col: "__id__"})
+            chunk["__id__"] = chunk["__id__"].map(normalize_id)
+            sub = chunk[chunk["__id__"].isin(required_ids)]
+            if not sub.empty:
+                out.append(sub)
+        return out
+
+    try:
+        collected = _collect_chunks(pd.read_csv(path, chunksize=chunksize))
+    except pd.errors.ParserError:
+        # Fallback parser for very large CSVs where C engine can intermittently fail on HPC filesystems.
+        collected = _collect_chunks(pd.read_csv(path, chunksize=chunksize, engine="python"))
 
     if not collected:
         return pd.DataFrame(dtype=np.float32)
@@ -200,6 +228,85 @@ def load_mvp_reg_targets(variant_map_csv: str, target_npy: str) -> pd.DataFrame:
     return out
 
 
+def build_rsid_to_hgvs_map(
+    hgvs_embed_csv: str,
+    rsid_embed_csv: str,
+    chunksize: int = 200000,
+) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+
+    hgvs_iter = pd.read_csv(hgvs_embed_csv, usecols=["variant_id"], chunksize=chunksize)
+    rsid_iter = pd.read_csv(rsid_embed_csv, usecols=["variant_id"], chunksize=chunksize)
+
+    for hgvs_chunk, rsid_chunk in zip(hgvs_iter, rsid_iter):
+        if len(hgvs_chunk) != len(rsid_chunk):
+            raise ValueError("HGVS and RSID embedding files have mismatched chunk sizes")
+
+        hgvs_ids = hgvs_chunk["variant_id"].map(normalize_id).tolist()
+        rsid_ids = rsid_chunk["variant_id"].map(normalize_id).tolist()
+
+        for rsid, hgvs in zip(rsid_ids, hgvs_ids):
+            if not rsid or not hgvs:
+                continue
+            # Keep first mapping to avoid oscillation on duplicated IDs.
+            if rsid not in out:
+                out[rsid] = hgvs
+
+    return out
+
+
+def remap_variant_ids_to_hgvs(
+    df: pd.DataFrame,
+    rsid_to_hgvs: Dict[str, str],
+    task_name: str,
+) -> pd.DataFrame:
+    out = df.copy()
+    before = len(out)
+    out["variant_id"] = out["variant_id"].map(normalize_id)
+    mapped = out["variant_id"].map(rsid_to_hgvs)
+    mapped_ok = int(mapped.notna().sum())
+    out["variant_id"] = mapped.fillna("")
+    unresolved = int((out["variant_id"] == "").sum())
+    out = out[out["variant_id"] != ""].copy()
+    print(
+        f"{task_name}_id_remap: before={before} mapped={mapped_ok} "
+        f"unresolved_drop={unresolved} after={len(out)}"
+    )
+    return out
+
+
+def select_func_train_subset(
+    func_train_df: pd.DataFrame,
+    min_valid_scores: int,
+    per_gene_cap: int,
+    seed: int,
+) -> pd.DataFrame:
+    if func_train_df.empty:
+        return func_train_df.copy()
+
+    out = func_train_df.copy()
+    mask_cols = [c for c in out.columns if c.endswith("_mask")]
+    if not mask_cols:
+        raise ValueError("FUNC subset selection requires *_mask columns")
+    out["_valid_score_count"] = out[mask_cols].sum(axis=1)
+    out = out[out["_valid_score_count"] >= float(min_valid_scores)].copy()
+    after_quality = len(out)
+
+    if per_gene_cap > 0:
+        out = (
+            out.groupby("gene_id", group_keys=False)
+            .apply(lambda g: g.sample(n=min(len(g), per_gene_cap), random_state=seed))
+            .reset_index(drop=True)
+        )
+
+    out = out.drop(columns=["_valid_score_count"])
+    print(
+        f"func_train_subset: min_valid_scores={min_valid_scores} "
+        f"after_quality={after_quality} after_gene_cap={len(out)} cap={per_gene_cap}"
+    )
+    return out
+
+
 def _split_items(
     items: Sequence[str],
     seed: int,
@@ -235,7 +342,8 @@ def build_global_variant_split(
     func_df: pd.DataFrame,
     seed: int,
     ratios: Tuple[float, float, float],
-) -> Dict[str, str]:
+    return_gene_split: bool = False,
+) -> Dict[str, str] | Tuple[Dict[str, str], Dict[str, str]]:
     dfs = [main_df, domain_df, mvp_df, func_df]
     for df in dfs:
         if "variant_id" not in df.columns or "gene_id" not in df.columns:
@@ -279,6 +387,8 @@ def build_global_variant_split(
         variant_split = _split_items(sorted(unresolved_variants), seed + 99, ratios)
         variant_to_split.update(variant_split)
 
+    if return_gene_split:
+        return variant_to_split, gene_to_split
     return variant_to_split
 
 
@@ -381,6 +491,31 @@ def build_hetero_graph(
     return data
 
 
+def build_inductive_train_graph(
+    full_graph: HeteroData,
+    train_gene_indices: Set[int],
+) -> HeteroData:
+    """Keep only edges connected to train genes for graph relations touching gene nodes."""
+    graph = deepcopy(full_graph)
+    if not train_gene_indices:
+        return graph
+
+    gene_keep = torch.zeros(graph["gene"].x.shape[0], dtype=torch.bool)
+    gene_keep[list(train_gene_indices)] = True
+
+    for edge_type in list(graph.edge_index_dict.keys()):
+        src_type, _, dst_type = edge_type
+        edge_index = graph[edge_type].edge_index
+        mask = torch.ones(edge_index.shape[1], dtype=torch.bool)
+        if src_type == "gene":
+            mask = mask & gene_keep[edge_index[0]]
+        if dst_type == "gene":
+            mask = mask & gene_keep[edge_index[1]]
+        graph[edge_type].edge_index = edge_index[:, mask]
+
+    return graph
+
+
 def build_disease_to_traits_map(
     disease_df: pd.DataFrame,
     trait_mapping: Dict[str, int],
@@ -456,15 +591,14 @@ def make_main_records(
     variant_to_idx: Dict[str, int],
     gene_to_idx: Dict[str, int],
 ) -> List[Dict[str, Any]]:
-    grouped = (
-        main_df.groupby(["variant_id", "gene_id"], as_index=False)["disease_index"]
-        .apply(list)
-        .reset_index(drop=True)
+    grouped = main_df.groupby(["variant_id", "gene_id"], as_index=False).agg(
+        disease_index=("disease_index", list),
+        confidence=("confidence", "mean"),
     )
 
     records: List[Dict[str, Any]] = []
     for row in grouped.itertuples(index=False):
-        variant_id, gene_id, disease_ids = row
+        variant_id, gene_id, disease_ids, confidence = row
         v_idx = variant_to_idx.get(variant_id)
         g_idx = gene_to_idx.get(gene_id)
         if v_idx is None or g_idx is None:
@@ -477,6 +611,7 @@ def make_main_records(
                 "variant_idx": v_idx,
                 "gene_idx": g_idx,
                 "positive_disease_ids": pos,
+                "confidence": float(confidence),
             }
         )
     return records
@@ -528,14 +663,18 @@ def make_func_records(
     df: pd.DataFrame,
     variant_to_idx: Dict[str, int],
     gene_to_idx: Dict[str, int],
+    target_cols: Optional[Sequence[str]] = None,
+    mask_cols: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    cols = ["variant_id", "gene_id"] + FUNC_TARGET_COLS + FUNC_MASK_COLS
+    selected_targets = list(target_cols) if target_cols is not None else list(FUNC_TARGET_COLS)
+    selected_masks = list(mask_cols) if mask_cols is not None else get_func_mask_cols(selected_targets)
+    cols = ["variant_id", "gene_id"] + selected_targets + selected_masks
     for row in df[cols].itertuples(index=False):
         variant_id = row[0]
         gene_id = row[1]
-        target = np.asarray(row[2 : 2 + len(FUNC_TARGET_COLS)], dtype=np.float32)
-        mask = np.asarray(row[2 + len(FUNC_TARGET_COLS) :], dtype=np.float32)
+        target = np.asarray(row[2 : 2 + len(selected_targets)], dtype=np.float32)
+        mask = np.asarray(row[2 + len(selected_targets) :], dtype=np.float32)
         v_idx = variant_to_idx.get(variant_id)
         g_idx = gene_to_idx.get(gene_id)
         if v_idx is None or g_idx is None:
@@ -556,6 +695,7 @@ def _collate_main(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "variant_idx": torch.tensor([b["variant_idx"] for b in batch], dtype=torch.long),
         "gene_idx": torch.tensor([b["gene_idx"] for b in batch], dtype=torch.long),
         "positive_disease_ids": [b["positive_disease_ids"] for b in batch],
+        "confidence": torch.tensor([b.get("confidence", 1.0) for b in batch], dtype=torch.float32),
     }
 
 
@@ -644,3 +784,21 @@ def compute_train_test_overlap(
         "test_variants": len(test_union),
         "train_test_overlap": len(train_union & test_union),
     }
+
+
+def compute_func_target_scales(
+    func_train_df: pd.DataFrame,
+    target_cols: Optional[Sequence[str]] = None,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    selected_targets = list(target_cols) if target_cols is not None else list(FUNC_TARGET_COLS)
+    selected_masks = get_func_mask_cols(selected_targets)
+    scales: List[float] = []
+    for target_col, mask_col in zip(selected_targets, selected_masks):
+        valid = func_train_df[mask_col] > 0
+        vals = pd.to_numeric(func_train_df.loc[valid, target_col], errors="coerce").dropna()
+        if len(vals) == 0:
+            scales.append(1.0)
+        else:
+            scales.append(float(max(vals.std(ddof=0), eps)))
+    return np.asarray(scales, dtype=np.float32)

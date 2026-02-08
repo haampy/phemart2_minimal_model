@@ -97,7 +97,14 @@ class GraphEncoder(nn.Module):
 
 
 class TrilinearFusion(nn.Module):
-    def __init__(self, dim: int, dropout: float) -> None:
+    def __init__(
+        self,
+        dim: int,
+        dropout: float,
+        modality_drop_variant: float = 0.0,
+        modality_drop_protein: float = 0.0,
+        modality_drop_gene: float = 0.0,
+    ) -> None:
         super().__init__()
         self.variant_proj = nn.Linear(dim, dim)
         self.protein_proj = nn.Linear(dim, dim)
@@ -119,6 +126,9 @@ class TrilinearFusion(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(dim, dim),
         )
+        self.modality_drop_variant = modality_drop_variant
+        self.modality_drop_protein = modality_drop_protein
+        self.modality_drop_gene = modality_drop_gene
 
         self.register_buffer("gate_bias", torch.tensor([0.1, 0.0, -0.1], dtype=torch.float32))
 
@@ -128,7 +138,29 @@ class TrilinearFusion(nn.Module):
         protein_emb: torch.Tensor,
         gene_emb: torch.Tensor,
         gate_temperature: float = 1.0,
-    ) -> torch.Tensor:
+        return_gate_weights: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        if self.training:
+            bsz = variant_emb.shape[0]
+            mv = torch.ones(bsz, 1, device=variant_emb.device)
+            mp = torch.ones(bsz, 1, device=variant_emb.device)
+            mg = torch.ones(bsz, 1, device=variant_emb.device)
+
+            if self.modality_drop_variant > 0:
+                mv = torch.bernoulli(mv * (1.0 - self.modality_drop_variant))
+            if self.modality_drop_protein > 0:
+                mp = torch.bernoulli(mp * (1.0 - self.modality_drop_protein))
+            if self.modality_drop_gene > 0:
+                mg = torch.bernoulli(mg * (1.0 - self.modality_drop_gene))
+
+            all_zero = (mv + mp + mg) == 0
+            if all_zero.any():
+                mv[all_zero] = 1.0
+
+            variant_emb = variant_emb * mv
+            protein_emb = protein_emb * mp
+            gene_emb = gene_emb * mg
+
         v = self.variant_norm(self.variant_proj(variant_emb))
         p = self.protein_norm(self.protein_proj(protein_emb))
         g = self.gene_norm(self.gene_proj(gene_emb))
@@ -137,7 +169,10 @@ class TrilinearFusion(nn.Module):
         weights = F.softmax(logits / max(gate_temperature, 1e-3), dim=-1)
 
         fused = weights[:, 0:1] * variant_emb + weights[:, 1:2] * protein_emb + weights[:, 2:3] * gene_emb
-        return self.final(fused)
+        fused = self.final(fused)
+        if return_gate_weights:
+            return fused, weights
+        return fused
 
 
 class DiseaseEncoder(nn.Module):
@@ -223,6 +258,11 @@ class MultiTaskModel(nn.Module):
         domain_embedding_dim: int,
         mvp_out_dim: int = 120,
         func_out_dim: int = 8,
+        modality_drop_variant: float = 0.0,
+        modality_drop_protein: float = 0.0,
+        modality_drop_gene: float = 0.0,
+        main_temperature: float = 0.15,
+        main_logit_scale_learnable: bool = True,
     ) -> None:
         super().__init__()
         self.graph_encoder = GraphEncoder(
@@ -237,7 +277,13 @@ class MultiTaskModel(nn.Module):
         )
         self.variant_encoder = MLPEncoder(variant_in_dim, hidden_dim, out_dim, dropout)
         self.protein_encoder = MLPEncoder(protein_in_dim, hidden_dim, out_dim, dropout)
-        self.fusion = TrilinearFusion(out_dim, dropout)
+        self.fusion = TrilinearFusion(
+            out_dim,
+            dropout,
+            modality_drop_variant=modality_drop_variant,
+            modality_drop_protein=modality_drop_protein,
+            modality_drop_gene=modality_drop_gene,
+        )
 
         self.disease_encoder = DiseaseEncoder(out_dim, hidden_dim, dropout)
 
@@ -254,6 +300,11 @@ class MultiTaskModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, out_dim),
+        )
+        init_main_scale = 1.0 / max(main_temperature, 1e-6)
+        self.main_logit_scale_log = nn.Parameter(
+            torch.tensor(math.log(init_main_scale), dtype=torch.float32),
+            requires_grad=main_logit_scale_learnable,
         )
 
         self.domain_variant_proj = nn.Sequential(
@@ -289,11 +340,25 @@ class MultiTaskModel(nn.Module):
         protein_x: torch.Tensor,
         gene_graph_emb: torch.Tensor,
         gate_temperature: float = 1.0,
-    ) -> torch.Tensor:
+        return_gate_weights: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
         v = self.variant_encoder(variant_x.index_select(0, variant_ids))
         p = self.protein_encoder(protein_x.index_select(0, variant_ids))
         g = gene_graph_emb.index_select(0, gene_ids)
-        return self.fusion(v, p, g, gate_temperature=gate_temperature)
+        return self.fusion(
+            v,
+            p,
+            g,
+            gate_temperature=gate_temperature,
+            return_gate_weights=return_gate_weights,
+        )
+
+    def get_main_logit_scale(
+        self,
+        min_scale: float = 1.0,
+        max_scale: float = 100.0,
+    ) -> torch.Tensor:
+        return torch.exp(self.main_logit_scale_log).clamp(min=min_scale, max=max_scale)
 
     def encode_disease_batch(
         self,
@@ -315,17 +380,25 @@ class MultiTaskModel(nn.Module):
         disease_ids: Sequence[int],
         disease_to_traits: Dict[int, List[int]],
         gate_temperature: float = 1.0,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        z_v = self.encode_variant(
+        return_gate_weights: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        z_v_out = self.encode_variant(
             variant_ids,
             gene_ids,
             variant_x,
             protein_x,
             gene_graph_emb,
             gate_temperature=gate_temperature,
+            return_gate_weights=return_gate_weights,
         )
+        if return_gate_weights:
+            z_v, gate_weights = z_v_out
+        else:
+            z_v = z_v_out
         z_v = F.normalize(self.clip_variant_proj(z_v), dim=-1)
         z_d = self.encode_disease_batch(disease_ids, disease_to_traits, trait_graph_emb)
+        if return_gate_weights:
+            return z_v, z_d, gate_weights
         return z_v, z_d
 
     def forward_domain(
@@ -338,18 +411,27 @@ class MultiTaskModel(nn.Module):
         domain_embeddings: torch.Tensor,
         temperature: float = 0.15,
         gate_temperature: float = 1.0,
-    ) -> torch.Tensor:
-        z_v = self.encode_variant(
+        return_gate_weights: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        z_v_out = self.encode_variant(
             variant_ids,
             gene_ids,
             variant_x,
             protein_x,
             gene_graph_emb,
             gate_temperature=gate_temperature,
+            return_gate_weights=return_gate_weights,
         )
+        if return_gate_weights:
+            z_v, gate_weights = z_v_out
+        else:
+            z_v = z_v_out
         z_v = F.normalize(self.domain_variant_proj(z_v), dim=-1)
         z_p = F.normalize(self.domain_transform(domain_embeddings), dim=-1)
-        return z_v @ z_p.t() / max(temperature, 1e-6)
+        logits = z_v @ z_p.t() / max(temperature, 1e-6)
+        if return_gate_weights:
+            return logits, gate_weights
+        return logits
 
     def forward_mvp_reg(
         self,
@@ -359,16 +441,25 @@ class MultiTaskModel(nn.Module):
         protein_x: torch.Tensor,
         gene_graph_emb: torch.Tensor,
         gate_temperature: float = 1.0,
-    ) -> torch.Tensor:
-        z_v = self.encode_variant(
+        return_gate_weights: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        z_v_out = self.encode_variant(
             variant_ids,
             gene_ids,
             variant_x,
             protein_x,
             gene_graph_emb,
             gate_temperature=gate_temperature,
+            return_gate_weights=return_gate_weights,
         )
-        return self.mvp_head(z_v)
+        if return_gate_weights:
+            z_v, gate_weights = z_v_out
+        else:
+            z_v = z_v_out
+        out = self.mvp_head(z_v)
+        if return_gate_weights:
+            return out, gate_weights
+        return out
 
     def forward_func(
         self,
@@ -378,13 +469,22 @@ class MultiTaskModel(nn.Module):
         protein_x: torch.Tensor,
         gene_graph_emb: torch.Tensor,
         gate_temperature: float = 1.0,
-    ) -> torch.Tensor:
-        z_v = self.encode_variant(
+        return_gate_weights: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        z_v_out = self.encode_variant(
             variant_ids,
             gene_ids,
             variant_x,
             protein_x,
             gene_graph_emb,
             gate_temperature=gate_temperature,
+            return_gate_weights=return_gate_weights,
         )
-        return self.func_head(z_v)
+        if return_gate_weights:
+            z_v, gate_weights = z_v_out
+        else:
+            z_v = z_v_out
+        out = self.func_head(z_v)
+        if return_gate_weights:
+            return out, gate_weights
+        return out

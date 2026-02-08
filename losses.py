@@ -16,9 +16,15 @@ def main_multi_positive_bce_loss(
     all_disease_emb: torch.Tensor,
     positive_disease_ids_per_variant: List[List[int]],
     temperature: float = 0.15,
+    logit_scale: Optional[torch.Tensor] = None,
+    sample_weights: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Main task loss with logits [B, D] and multi-hot targets [B, D]."""
-    logits = variant_emb @ all_disease_emb.t() / max(temperature, 1e-6)
+    logits = variant_emb @ all_disease_emb.t()
+    if logit_scale is None:
+        logits = logits / max(temperature, 1e-6)
+    else:
+        logits = logits * logit_scale
     targets = torch.zeros_like(logits)
 
     valid_rows = []
@@ -36,7 +42,56 @@ def main_multi_positive_bce_loss(
         return torch.zeros([], device=logits.device, dtype=logits.dtype)
 
     valid_rows_t = torch.tensor(valid_rows, device=logits.device, dtype=torch.long)
-    return _BCE(logits.index_select(0, valid_rows_t), targets.index_select(0, valid_rows_t))
+    per_elem = F.binary_cross_entropy_with_logits(
+        logits.index_select(0, valid_rows_t),
+        targets.index_select(0, valid_rows_t),
+        reduction="none",
+    )
+    per_row = per_elem.mean(dim=1)
+    if sample_weights is None:
+        return per_row.mean()
+    w = sample_weights.index_select(0, valid_rows_t).clamp_min(0.0)
+    return (per_row * w).sum() / w.sum().clamp_min(1e-8)
+
+
+def main_multi_positive_softmax_loss(
+    variant_emb: torch.Tensor,
+    all_disease_emb: torch.Tensor,
+    positive_disease_ids_per_variant: List[List[int]],
+    temperature: float = 0.15,
+    logit_scale: Optional[torch.Tensor] = None,
+    sample_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Multi-positive retrieval loss with logits [B, D] over full disease bank."""
+    logits = variant_emb @ all_disease_emb.t()
+    if logit_scale is None:
+        logits = logits / max(temperature, 1e-6)
+    else:
+        logits = logits * logit_scale
+    pos_mask = torch.zeros_like(logits, dtype=torch.bool)
+
+    for i, positives in enumerate(positive_disease_ids_per_variant):
+        if not positives:
+            continue
+        idx = torch.tensor(sorted(set(positives)), device=logits.device, dtype=torch.long)
+        idx = idx[(idx >= 0) & (idx < logits.shape[1])]
+        if idx.numel() == 0:
+            continue
+        pos_mask[i, idx] = True
+
+    valid = pos_mask.any(dim=1)
+    if not valid.any():
+        return torch.zeros([], device=logits.device, dtype=logits.dtype)
+
+    den = torch.logsumexp(logits, dim=1)
+    num = torch.logsumexp(logits.masked_fill(~pos_mask, float("-inf")), dim=1)
+    per_row = -(num - den)
+    per_row = per_row[valid]
+
+    if sample_weights is None:
+        return per_row.mean()
+    w = sample_weights[valid].clamp_min(0.0)
+    return (per_row * w).sum() / w.sum().clamp_min(1e-8)
 
 
 def domain_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -55,9 +110,25 @@ def func_impact_loss(
     target: torch.Tensor,
     mask: torch.Tensor,
     column_weights: Optional[torch.Tensor] = None,
+    column_scales: Optional[torch.Tensor] = None,
+    loss_type: str = "mse",
+    smooth_l1_beta: float = 1.0,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    err = (pred - target) ** 2
+    diff = pred - target
+    if column_scales is not None:
+        diff = diff / column_scales.clamp_min(1e-6)
+
+    if loss_type == "smooth_l1":
+        err = F.smooth_l1_loss(
+            diff,
+            torch.zeros_like(diff),
+            reduction="none",
+            beta=smooth_l1_beta,
+        )
+    else:
+        err = diff**2
+
     if column_weights is not None:
         err = err * column_weights
         mask = mask * column_weights

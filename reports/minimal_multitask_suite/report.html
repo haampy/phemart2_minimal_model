@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PheMART2 Minimal Multitask Report</title>
+  <style>
+    :root {
+      --bg: #f3f6f4;
+      --ink: #102a25;
+      --muted: #4f6b63;
+      --card: #ffffff;
+      --line: #d7e2dc;
+      --accent: #2D6A4F;
+      --accent2: #E76F51;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(1300px 600px at -10% -10%, #e7efe9 0%, transparent 60%),
+        radial-gradient(900px 450px at 110% 0%, #f8e4d8 0%, transparent 55%),
+        var(--bg);
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    .wrap { max-width: 1200px; margin: 30px auto 56px; padding: 0 20px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 8px 24px rgba(16, 42, 37, 0.06);
+      padding: 20px 22px;
+      margin-bottom: 18px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-family: "Source Serif 4", "Georgia", serif;
+      font-size: 2rem;
+      letter-spacing: 0.2px;
+    }
+    h2 { margin: 0 0 12px 0; font-size: 1.15rem; }
+    .muted { color: var(--muted); margin: 0; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .stats div {
+      background: linear-gradient(145deg, #f8fbf9, #edf4f0);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .stats span {
+      display: block;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .stats label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    img {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    table.tbl {
+      width: 100%;
+      border-collapse: collapse;
+      overflow-x: auto;
+      display: block;
+    }
+    table.tbl th, table.tbl td {
+      border-bottom: 1px solid #e4ede8;
+      padding: 8px 10px;
+      text-align: left;
+      white-space: nowrap;
+      font-size: 0.9rem;
+    }
+    table.tbl thead th {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #35564d;
+      background: #f3f8f5;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    
+        <section class="card hero">
+          <div>
+            <h1>PheMART2 Minimal Multitask Report</h1>
+            <p class="muted">Source: <code>/n/data1/hsph/biostat/celehs/lab/junwen/PheMART+/PheMART2/minimal_model/experiments/minimal_multitask_suite</code></p>
+          </div>
+          <div class="stats">
+            <div><span>3</span><label>Experiments</label></div>
+            <div><span>1</span><label>Seeds</label></div>
+            <div><span>3</span><label>Runs</label></div>
+            <div><span>main.mrr</span><label>Primary Metric</label></div>
+          </div>
+        </section>
+        
+            <section class="card">
+              <h2>Primary Leaderboard</h2>
+              <img src="assets/primary_bar.png" alt="primary metric barplot" />
+            </section>
+            
+            <section class="card">
+              <h2>Seed Stability</h2>
+              <img src="assets/seed_strip.png" alt="seed strip plot" />
+            </section>
+            
+        <section class="card">
+          <h2>Experiment Leaderboard (mean ± std)</h2>
+          <table class="tbl"><thead><tr><th>experiment</th><th>n_seeds</th><th>main.mrr__pm</th><th>main.recall@1__pm</th><th>main.recall@5__pm</th><th>main.recall@10__pm</th><th>main.n_eval__pm</th><th>domain.top1__pm</th><th>domain.top5__pm</th><th>domain.n_eval__pm</th><th>func.masked_mae__pm</th><th>func.n_eval__pm</th></tr></thead><tbody><tr><td>short_e20</td><td>1</td><td>0.0478 ± 0.0000</td><td>0.0062 ± 0.0000</td><td>0.0597 ± 0.0000</td><td>0.1321 ± 0.0000</td><td>2112.0000 ± 0.0000</td><td>0.4161 ± 0.0000</td><td>0.6344 ± 0.0000</td><td>22883.0000 ± 0.0000</td><td>4.1428 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr>
+<tr><td>long_e100</td><td>1</td><td>0.0277 ± 0.0000</td><td>0.0071 ± 0.0000</td><td>0.0312 ± 0.0000</td><td>0.0502 ± 0.0000</td><td>2112.0000 ± 0.0000</td><td>0.4599 ± 0.0000</td><td>0.6286 ± 0.0000</td><td>22883.0000 ± 0.0000</td><td>4.0979 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr>
+<tr><td>baseline_e50</td><td>1</td><td>0.0159 ± 0.0000</td><td>0.0047 ± 0.0000</td><td>0.0147 ± 0.0000</td><td>0.0241 ± 0.0000</td><td>2112.0000 ± 0.0000</td><td>0.4615 ± 0.0000</td><td>0.6322 ± 0.0000</td><td>22883.0000 ± 0.0000</td><td>4.1007 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr></tbody></table>
+          <p class="muted">Direction rule: higher is better except error metrics (MAE/RMSE/loss).</p>
+        </section>
+        
+            <section class="card">
+              <h2>Task: domain</h2>
+              <table class="tbl"><thead><tr><th>experiment</th><th>n_seeds</th><th>domain.top1</th><th>domain.top5</th><th>domain.n_eval</th></tr></thead><tbody><tr><td>short_e20</td><td>1</td><td>0.4161 ± 0.0000</td><td>0.6344 ± 0.0000</td><td>22883.0000 ± 0.0000</td></tr>
+<tr><td>long_e100</td><td>1</td><td>0.4599 ± 0.0000</td><td>0.6286 ± 0.0000</td><td>22883.0000 ± 0.0000</td></tr>
+<tr><td>baseline_e50</td><td>1</td><td>0.4615 ± 0.0000</td><td>0.6322 ± 0.0000</td><td>22883.0000 ± 0.0000</td></tr></tbody></table>
+            </section>
+            
+            <section class="card">
+              <h2>Task: func</h2>
+              <table class="tbl"><thead><tr><th>experiment</th><th>n_seeds</th><th>func.masked_mae</th><th>func.n_eval</th></tr></thead><tbody><tr><td>short_e20</td><td>1</td><td>4.1428 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr>
+<tr><td>long_e100</td><td>1</td><td>4.0979 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr>
+<tr><td>baseline_e50</td><td>1</td><td>4.1007 ± 0.0000</td><td>46.0000 ± 0.0000</td></tr></tbody></table>
+            </section>
+            
+            <section class="card">
+              <h2>Task: main</h2>
+              <table class="tbl"><thead><tr><th>experiment</th><th>n_seeds</th><th>main.mrr</th><th>main.recall@1</th><th>main.recall@5</th><th>main.recall@10</th><th>main.n_eval</th></tr></thead><tbody><tr><td>short_e20</td><td>1</td><td>0.0478 ± 0.0000</td><td>0.0062 ± 0.0000</td><td>0.0597 ± 0.0000</td><td>0.1321 ± 0.0000</td><td>2112.0000 ± 0.0000</td></tr>
+<tr><td>long_e100</td><td>1</td><td>0.0277 ± 0.0000</td><td>0.0071 ± 0.0000</td><td>0.0312 ± 0.0000</td><td>0.0502 ± 0.0000</td><td>2112.0000 ± 0.0000</td></tr>
+<tr><td>baseline_e50</td><td>1</td><td>0.0159 ± 0.0000</td><td>0.0047 ± 0.0000</td><td>0.0147 ± 0.0000</td><td>0.0241 ± 0.0000</td><td>2112.0000 ± 0.0000</td></tr></tbody></table>
+            </section>
+            
+        <section class="card">
+          <h2>Run-Level Details</h2>
+          <table class="tbl"><thead><tr><th>experiment</th><th>seed</th><th>metrics_path</th><th>main.mrr</th><th>main.recall@1</th><th>main.recall@5</th><th>main.recall@10</th><th>main.n_eval</th><th>domain.top1</th><th>domain.top5</th><th>domain.n_eval</th><th>func.masked_mae</th><th>func.n_eval</th></tr></thead><tbody><tr><td>baseline_e50</td><td>42</td><td>/n/data1/hsph/biostat/celehs/lab/junwen/PheMART+/PheMART2/minimal_model/experiments/minimal_multitask_suite/baseline_e50/seed_42/test_metrics.json</td><td>0.015852199546306664</td><td>0.004734848484848485</td><td>0.014678030303030304</td><td>0.024147727272727272</td><td>2112.0</td><td>0.4614779530655945</td><td>0.632216055587117</td><td>22883.0</td><td>4.100740003449965</td><td>46.0</td></tr>
+<tr><td>long_e100</td><td>42</td><td>/n/data1/hsph/biostat/celehs/lab/junwen/PheMART+/PheMART2/minimal_model/experiments/minimal_multitask_suite/long_e100/seed_42/test_metrics.json</td><td>0.02767897079474164</td><td>0.007102272727272727</td><td>0.03125</td><td>0.050189393939393936</td><td>2112.0</td><td>0.45994843333479</td><td>0.6286326093606608</td><td>22883.0</td><td>4.097888566150285</td><td>46.0</td></tr>
+<tr><td>short_e20</td><td>42</td><td>/n/data1/hsph/biostat/celehs/lab/junwen/PheMART+/PheMART2/minimal_model/experiments/minimal_multitask_suite/short_e20/seed_42/test_metrics.json</td><td>0.04781453551587349</td><td>0.00615530303030303</td><td>0.05965909090909091</td><td>0.13210227272727273</td><td>2112.0</td><td>0.416116767906306</td><td>0.634444784337718</td><td>22883.0</td><td>4.142840697894409</td><td>46.0</td></tr></tbody></table>
+        </section>
+        
+  </div>
+</body>
+</html>
