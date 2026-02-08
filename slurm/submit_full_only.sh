@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1,vram:40G
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=1:00:00
+#SBATCH --time=1:45:00
 #SBATCH --output=logs/minimal_full_only_%j.out
 #SBATCH --error=logs/minimal_full_only_%j.err
 
